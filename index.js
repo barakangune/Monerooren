@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 // IMPORTANT : Remplacez cette valeur par votre secret Moneroo
 const MONEROO_WEBHOOK_SECRET =
     process.env.MONEROO_WEBHOOK_SECRET ||
-    "VOTRE_SECRET_MONEROO";
+    "Pvk_sandbox_m7uml9|01KXXVNT2X8MBDQ8P9ZC3YXPNS";
 
 // On récupère le body brut pour vérifier la signature
 app.use(
