@@ -1,5 +1,3 @@
-// server.js
-
 const express = require("express");
 const crypto = require("crypto");
 
@@ -81,11 +79,6 @@ app.post("/webhook/moneroo", (req, res) => {
             JSON.stringify(payload, null, 2)
         );
 
-        // Exemple :
-        // - Activer un abonnement.
-        // - Mettre à jour la base de données.
-        // - Envoyer une notification.
-
         if (payload.data?.status === "success") {
             console.log(
                 "Paiement confirmé : activation de l'abonnement."
@@ -103,8 +96,12 @@ app.post("/webhook/moneroo", (req, res) => {
             success: false,
             message: "Erreur interne du serveur.",
         });
- application.get('/', (req, res) => {
-    res.send('Mon serveur fonctionne!'); }
+    }
+});
+
+// Route racine placée hors du bloc de gestion du webhook
+app.get('/', (req, res) => {
+    res.send('Mon serveur fonctionne!');
 });
 
 app.listen(PORT, () => {
