@@ -103,7 +103,7 @@ app.post("/webhook/moneroo", (req, res) => {
             success: false,
             message: "Erreur interne du serveur.",
         });
-    app.get('/', (req, res) => {
+    application.get('/', (req, res) => {
     res.send('Mon serveur fonctionne!'}
 });
 
