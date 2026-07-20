@@ -16,17 +16,15 @@ app.use(express.json({
 
 /** 
  * ROUTE ANDROID : Initier le paiement
- * Correspond aux champs définis dans votre PaymentRequest Kotlin
  */
 app.post("/initier-paiement", async (req, res) => {
   try {
-    // Capture de tous les champs envoyés par Android
     const { plan, amount, cardNumber, expiry, cvv, cardholderName } = req.body;
     
     console.log(`Paiement initié pour le plan : ${plan} par ${cardholderName}`);
 
-    // Appel à l'API Moneroo
-    const response = await axios.post("https://api.moneroo.io/v1/payments", {
+    // Appel à l'API Moneroo (Correction de l'URL pour l'environnement sandbox)
+    const response = await axios.post("https://api-sandbox.moneroo.io/v1/payments", {
         amount: amount,
         currency: "XOF",
         customer: { name: cardholderName },
