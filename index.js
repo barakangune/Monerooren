@@ -3,13 +3,12 @@ const crypto = require("crypto");
 const axios = require("axios");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // Configurations
 const MONEROO_WEBHOOK_SECRET = process.env.MONEROO_WEBHOOK_SECRET || "pvk_ynbsy6|01KY02RBBBF3HQTZP5FTY6ZS4B";
 const MONEROO_API_KEY = process.env.MONEROO_API_KEY; 
 
-// Middleware indispensable pour lire le JSON
 app.use(express.json({ 
     verify: (req, res, buffer) => { req.rawBody = buffer.toString(); } 
 }));
@@ -19,20 +18,24 @@ app.use(express.json({
  */
 app.post("/initier-paiement", async (req, res) => {
   try {
-    const { plan, amount, cardNumber, expiry, cvv, cardholderName } = req.body;
+    const { plan, amount, cardholderName } = req.body;
     
-    console.log(`Paiement initié pour le plan : ${plan} par ${cardholderName}`);
+    if (!MONEROO_API_KEY) {
+        console.error("Erreur : MONEROO_API_KEY est manquante dans les variables d'environnement.");
+        return res.status(500).json({ status: "error", message: "Configuration serveur manquante." });
+    }
 
-    // Appel à l'API Moneroo avec le endpoint correct /v1/payments/initialize
+    console.log(`Tentative de paiement pour : ${plan}, Montant : ${amount}`);
+
     const response = await axios.post("https://api-sandbox.moneroo.io/v1/payments/initialize", {
         amount: amount,
         currency: "XOF",
         description: `Abonnement ${plan}`,
         customer: { 
-            name: cardholderName,
-            email: "client@exemple.com" // Champ requis par l'API
+            name: cardholderName || "Client inconnu",
+            email: "client@exemple.com"
         },
-        return_url: "https://monerooren.onrender.com" // URL de retour nécessaire
+        return_url: "https://monerooren.onrender.com"
     }, {
         headers: { 
             "Authorization": `Bearer ${MONEROO_API_KEY}`,
@@ -40,22 +43,23 @@ app.post("/initier-paiement", async (req, res) => {
         }
     });
 
-    return res.status(200).json({ 
-        status: "success", 
-        message: "Paiement initié avec succès",
-        transaction: response.data 
-    });
+    return res.status(200).json(response.data);
+
   } catch (error) {
-    console.error("Erreur API Moneroo :", error.response?.data || error.message);
+    // Affiche l'erreur réelle dans les logs Render pour diagnostic
+    const errorDetails = error.response?.data || error.message;
+    console.error("ERREUR DÉTAILLÉE MONEROO :", JSON.stringify(errorDetails));
+    
     return res.status(500).json({ 
         status: "error", 
-        message: "Erreur lors de la connexion à Moneroo" 
+        message: "Erreur lors de la connexion à Moneroo",
+        details: errorDetails
     });
   }
 });
 
 /** 
- * ROUTE WEBHOOK : Confirmation de Moneroo
+ * ROUTE WEBHOOK
  */
 function verifySignature(payload, signature, secret) {
   const expectedSignature = crypto.createHmac("sha256", secret).update(payload).digest("hex");
@@ -63,26 +67,14 @@ function verifySignature(payload, signature, secret) {
 }
 
 app.post("/webhook/moneroo", (req, res) => {
-  try {
-    const signature = req.headers["x-moneroo-signature"];
-    if (!signature || !verifySignature(req.rawBody, signature, MONEROO_WEBHOOK_SECRET)) {
-        return res.status(401).json({ success: false, message: "Signature invalide ou manquante." });
-    }
-
-    const payload = req.body;
-    console.log("Webhook reçu :", payload.data?.status);
-
-    if (payload.data?.status === "success") {
-      console.log("Paiement confirmé : activation de l'abonnement.");
-    }
-
-    return res.status(200).json({ success: true, message: "Webhook traité avec succès." });
-  } catch (error) {
-    console.error("Erreur Webhook :", error);
-    return res.status(500).json({ success: false, message: "Erreur interne." });
+  const signature = req.headers["x-moneroo-signature"];
+  if (!signature || !verifySignature(req.rawBody, signature, MONEROO_WEBHOOK_SECRET)) {
+      return res.status(401).json({ success: false, message: "Signature invalide." });
   }
+  console.log("Webhook reçu avec succès.");
+  return res.status(200).json({ success: true });
 });
 
-app.get("/", (req, res) => { res.send("Mon serveur fonctionne!"); });
+app.get("/", (req, res) => { res.send("Mon serveur fonctionne parfaitement!"); });
 
 app.listen(PORT, () => { console.log(`Serveur démarré sur le port ${PORT}`); });
