@@ -343,6 +343,57 @@ app.post('/webhook/moneroo', async (req, res) => {
 // =====================
 // Lancer le serveur
 // =====================
+// =====================
+// Pulse (Webhook) Chariow
+// =====================
+app.post('/webhook/chariow', (req, res) => {
+  try {
+
+    console.log('===== PULSE CHARIOW =====');
+    console.log(req.body);
+
+    const event = req.body.event;
+
+    switch (event) {
+
+      case 'successful.sale':
+        console.log('Paiement réussi !');
+        console.log('Activer abonnement Premium.');
+        break;
+
+      case 'failed.sale':
+        console.log('Paiement échoué.');
+        break;
+
+      case 'refunded.sale':
+        console.log('Paiement remboursé.');
+        break;
+
+      default:
+        console.log(
+          'Événement Chariow inconnu :',
+          event
+        );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Pulse Chariow reçu avec succès.'
+    });
+
+  } catch (error) {
+
+    console.error(
+      'ERREUR PULSE CHARIOW:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: 'Erreur serveur.'
+    });
+  }
+});
 app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
   console.log(`Base API Moneroo : ${MONEROO_API_BASE_URL}`);
