@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Configurations
-const MONEROO_WEBHOOK_SECRET = process.env.MONEROO_WEBHOOK_SECRET || "Pvk_sandbox_m7um19|01KXXVNT2X8MBDQ8P9ZC3YXPNS";
+const MONEROO_WEBHOOK_SECRET = process.env.MONEROO_WEBHOOK_SECRET || "pvk_ynbsy6|01KY02RBBBF3HQTZP5FTY6ZS4B";
 const MONEROO_API_KEY = process.env.MONEROO_API_KEY; 
 
 // Middleware indispensable pour lire le JSON
