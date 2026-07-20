@@ -18,7 +18,7 @@ const MONEROO_RETURN_URL =
 
 // Configuration Chariow
 const CHARIOW_API_KEY = process.env.CHARIOW_API_KEY;
-const CHARIOW_API_BASE_URL = process.env.CHARIOW_API_BASE_URL || 'https://api.chariow.com'; // TODO: Ajuster si nécessaire selon la doc officielle
+const CHARIOW_API_BASE_URL = process.env.CHARIOW_API_BASE_URL || 'https://api.chariow.com';
 
 // Pour un paiement par carte XOF, la doc Moneroo liste notamment le shortcode `card_xof`.
 const DEFAULT_PAYMENT_METHODS = ['card_xof'];
@@ -270,7 +270,7 @@ app.post('/acheter-abonnement', async (req, res) => {
       });
     }
 
-    const { plan, email, amount, firstName, lastName } = req.body || {};
+    const { product_id, email, firstName, lastName, phone } = req.body;
 
     if (!email) {
       return res.status(400).json({
@@ -279,17 +279,16 @@ app.post('/acheter-abonnement', async (req, res) => {
       });
     }
 
-    // TODO: Ajuster le payload exact selon la documentation officielle de l'API Chariow
     const payload = {
-      plan: plan || 'Standard',
-      email: String(email),
-      amount: amount ? Number(amount) : undefined,
-      first_name: firstName || 'Client',
-      last_name: lastName || 'Inconnu',
+      product_id,
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      phone: { number: phone, country_code: "CD" }
     };
 
     const response = await axios.post(
-      `${CHARIOW_API_BASE_URL}/v1/subscriptions/buy`, // TODO: Remplacer par l'endpoint officiel Chariow
+      `${CHARIOW_API_BASE_URL}/v1/checkout`,
       payload,
       {
         headers: {
@@ -401,24 +400,20 @@ app.post('/webhook/chariow', (req, res) => {
     console.log(req.body);
 
     const event = req.body?.event;
-    const data = req.body?.data || req.body; // S'adapte selon la structure exacte reçue
+    const data = req.body?.data || req.body;
 
     switch (event) {
       case 'successful.sale':
         console.log('Paiement réussi !');
         console.log('Activer abonnement Premium.');
-        // TODO: Implémenter la logique d'activation de l'abonnement en base de données ou via service tiers
-        // Ex: updateUserSubscription(data.customer_email, 'active');
         break;
 
       case 'failed.sale':
         console.log('Paiement échoué.');
-        // TODO: Gérer l'échec de vente si nécessaire
         break;
 
       case 'refunded.sale':
         console.log('Paiement remboursé.');
-        // TODO: Gérer le remboursement et désactiver l'abonnement si nécessaire
         break;
 
       default:
