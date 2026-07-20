@@ -16,8 +16,11 @@ const MONEROO_API_BASE_URL = process.env.MONEROO_API_BASE_URL || 'https://api.mo
 const MONEROO_RETURN_URL =
   process.env.MONEROO_RETURN_URL || 'https://monerooren.onrender.com/paiement/retour';
 
+// Configuration Chariow
+const CHARIOW_API_KEY = process.env.CHARIOW_API_KEY;
+const CHARIOW_API_BASE_URL = process.env.CHARIOW_API_BASE_URL || 'https://api.chariow.com'; // TODO: Ajuster si nécessaire selon la doc officielle
+
 // Pour un paiement par carte XOF, la doc Moneroo liste notamment le shortcode `card_xof`.
-// Tu peux remplacer via MONEROO_PAYMENT_METHODS="card_xof" ou ajouter d'autres codes supportés.
 const DEFAULT_PAYMENT_METHODS = ['card_xof'];
 
 // Middleware pour récupérer le raw body nécessaire à la vérification du webhook
@@ -74,25 +77,20 @@ function isMonerooConfigured() {
   return Boolean(MONEROO_API_KEY);
 }
 
+function isChariowConfigured() {
+  return Boolean(CHARIOW_API_KEY);
+}
+
 // =====================
 // Route santé
 // =====================
 app.get('/', (req, res) => {
-  res.send('Mon serveur Moneroo fonctionne correctement.');
+  res.send('Mon serveur Moneroo et Chariow fonctionne correctement.');
 });
 
 // =====================
-// Initier un paiement
+// Routes Moneroo
 // =====================
-// Body attendu par ton app Android par exemple :
-// {
-//   "plan": "Premium",
-//   "amount": 1000,
-//   "cardholderName": "Jean",
-//   "email": "[email protected]",
-//   "firstName": "Jean",
-//   "lastName": "Kabila"
-// }
 app.post('/initier-paiement', async (req, res) => {
   try {
     if (!isMonerooConfigured()) {
@@ -149,16 +147,12 @@ app.post('/initier-paiement', async (req, res) => {
       methods: getPaymentMethodsFromEnv(),
     };
 
-    // Champs optionnels si tu veux les transmettre
     if (phone) payload.customer.phone = String(phone);
     if (address) payload.customer.address = String(address);
     if (city) payload.customer.city = String(city);
     if (country) payload.customer.country = String(country);
     if (zip) payload.customer.zip = String(zip);
 
-    // Metadata optionnel : Moneroo attend un tableau d'objets clé/valeur ou
-    // des données additionnelles selon le format de ta version.
-    // On accepte ici un objet simple et on le convertit proprement.
     if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
       payload.metadata = Object.entries(metadata).map(([key, value]) => ({
         key: String(key),
@@ -209,10 +203,6 @@ app.post('/initier-paiement', async (req, res) => {
   }
 });
 
-// =====================
-// Vérifier un paiement
-// Moneroo recommande de re-vérifier via l’API avant de créditer le client.
-// =====================
 app.get('/paiement/:paymentId/verifier', async (req, res) => {
   try {
     if (!isMonerooConfigured()) {
@@ -268,8 +258,75 @@ app.get('/paiement/:paymentId/verifier', async (req, res) => {
 });
 
 // =====================
-// Webhook Moneroo
-// La signature est dans X-Moneroo-Signature et se vérifie en HMAC-SHA256
+// Routes Chariow
+// =====================
+// Endpoint pour initier un achat d'abonnement via Chariow
+app.post('/acheter-abonnement', async (req, res) => {
+  try {
+    if (!isChariowConfigured()) {
+      return res.status(500).json({
+        status: 'error',
+        message: 'CHARIOW_API_KEY manquante dans les variables d’environnement.',
+      });
+    }
+
+    const { plan, email, amount, firstName, lastName } = req.body || {};
+
+    if (!email) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Le champ email est obligatoire.',
+      });
+    }
+
+    // TODO: Ajuster le payload exact selon la documentation officielle de l'API Chariow
+    const payload = {
+      plan: plan || 'Standard',
+      email: String(email),
+      amount: amount ? Number(amount) : undefined,
+      first_name: firstName || 'Client',
+      last_name: lastName || 'Inconnu',
+    };
+
+    const response = await axios.post(
+      `${CHARIOW_API_BASE_URL}/v1/subscriptions/buy`, // TODO: Remplacer par l'endpoint officiel Chariow
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${CHARIOW_API_KEY}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        timeout: 30000,
+      }
+    );
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Achat d’abonnement Chariow initié avec succès.',
+      raw: response.data,
+    });
+  } catch (error) {
+    const errorDetails = error.response?.data || {
+      message: error.message,
+      code: error.code || null,
+    };
+
+    console.error(
+      'ERREUR CHARIOW ACHETER-ABONNEMENT:',
+      JSON.stringify(errorDetails, null, 2)
+    );
+
+    return res.status(500).json({
+      status: 'error',
+      message: "Erreur lors de l'initialisation de l'abonnement Chariow.",
+      details: errorDetails,
+    });
+  }
+});
+
+// =====================
+// Webhooks Moneroo
 // =====================
 app.post('/webhook/moneroo', async (req, res) => {
   try {
@@ -316,12 +373,7 @@ app.post('/webhook/moneroo', async (req, res) => {
       status: data.status || null,
     });
 
-    // Exemple de traitement
     if (event === 'payment.success') {
-      // Ici tu peux:
-      // 1) re-vérifier le paiement via /v1/payments/{paymentId}/verify
-      // 2) créditer l'utilisateur
-      // 3) marquer la commande comme payée
       console.log('Paiement réussi:', data.id);
     } else if (event === 'payment.failed') {
       console.log('Paiement échoué:', data.id);
@@ -341,60 +393,57 @@ app.post('/webhook/moneroo', async (req, res) => {
 });
 
 // =====================
-// Lancer le serveur
-// =====================
-// =====================
-// Pulse (Webhook) Chariow
+// Pulses Chariow
 // =====================
 app.post('/webhook/chariow', (req, res) => {
   try {
-
     console.log('===== PULSE CHARIOW =====');
     console.log(req.body);
 
-    const event = req.body.event;
+    const event = req.body?.event;
+    const data = req.body?.data || req.body; // S'adapte selon la structure exacte reçue
 
     switch (event) {
-
       case 'successful.sale':
         console.log('Paiement réussi !');
         console.log('Activer abonnement Premium.');
+        // TODO: Implémenter la logique d'activation de l'abonnement en base de données ou via service tiers
+        // Ex: updateUserSubscription(data.customer_email, 'active');
         break;
 
       case 'failed.sale':
         console.log('Paiement échoué.');
+        // TODO: Gérer l'échec de vente si nécessaire
         break;
 
       case 'refunded.sale':
         console.log('Paiement remboursé.');
+        // TODO: Gérer le remboursement et désactiver l'abonnement si nécessaire
         break;
 
       default:
-        console.log(
-          'Événement Chariow inconnu :',
-          event
-        );
+        console.log('Événement Chariow inconnu :', event);
     }
 
     return res.status(200).json({
       success: true,
-      message: 'Pulse Chariow reçu avec succès.'
+      message: 'Pulse Chariow reçu avec succès.',
     });
-
   } catch (error) {
-
-    console.error(
-      'ERREUR PULSE CHARIOW:',
-      error
-    );
+    console.error('ERREUR PULSE CHARIOW:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Erreur serveur.'
+      message: 'Erreur serveur.',
     });
   }
 });
+
+// =====================
+// Lancement du serveur
+// =====================
 app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
   console.log(`Base API Moneroo : ${MONEROO_API_BASE_URL}`);
+  console.log(`Base API Chariow : ${CHARIOW_API_BASE_URL}`);
 });
