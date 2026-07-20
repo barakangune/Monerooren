@@ -7,25 +7,31 @@ const PORT = process.env.PORT || 3000;
 
 // Configurations
 const MONEROO_WEBHOOK_SECRET = process.env.MONEROO_WEBHOOK_SECRET || "Pvk_sandbox_m7um19|01KXXVNT2X8MBDQ8P9ZC3YXPNS";
-// Assurez-vous d'ajouter MONEROO_API_KEY dans les variables d'environnement de Render
 const MONEROO_API_KEY = process.env.MONEROO_API_KEY; 
 
-app.use(express.json({ verify: (req, res, buffer) => { req.rawBody = buffer.toString(); } }));
+// Middleware indispensable pour lire le JSON
+app.use(express.json({ 
+    verify: (req, res, buffer) => { req.rawBody = buffer.toString(); } 
+}));
 
 /** 
- * ROUTE ANDROID : Initier le paiement (Appel réel API Moneroo)
+ * ROUTE ANDROID : Initier le paiement
+ * Correspond aux champs définis dans votre PaymentRequest Kotlin
  */
 app.post("/initier-paiement", async (req, res) => {
   try {
-    const { plan, amount, cardHolderName } = req.body;
-    console.log(`Paiement initié pour le plan : ${plan} par ${cardHolderName}`);
+    // Capture de tous les champs envoyés par Android
+    const { plan, amount, cardNumber, expiry, cvv, cardholderName } = req.body;
+    
+    console.log(`Paiement initié pour le plan : ${plan} par ${cardholderName}`);
 
-    // Appel réel à l'API Moneroo
+    // Appel à l'API Moneroo
     const response = await axios.post("https://api.moneroo.io/v1/payments", {
         amount: amount,
-        currency: "XOF", // Vérifiez votre devise
-        customer: { name: cardHolderName },
+        currency: "XOF",
+        customer: { name: cardholderName },
         description: `Abonnement ${plan}`
+        // Note : Si l'API Moneroo nécessite les détails de la carte ici, ajoutez-les selon leur documentation
     }, {
         headers: { 
             "Authorization": `Bearer ${MONEROO_API_KEY}`,
@@ -35,11 +41,15 @@ app.post("/initier-paiement", async (req, res) => {
 
     return res.status(200).json({ 
         status: "success", 
+        message: "Paiement initié avec succès",
         transaction: response.data 
     });
   } catch (error) {
-    console.error("Erreur API Moneroo :", error.message);
-    return res.status(500).json({ status: "error", message: "Erreur lors de la connexion à Moneroo" });
+    console.error("Erreur API Moneroo :", error.response?.data || error.message);
+    return res.status(500).json({ 
+        status: "error", 
+        message: "Erreur lors de la connexion à Moneroo" 
+    });
   }
 });
 
@@ -74,4 +84,4 @@ app.post("/webhook/moneroo", (req, res) => {
 
 app.get("/", (req, res) => { res.send("Mon serveur fonctionne!"); });
 
-app.listen(PORT, () => { console.log(`Serveur démarré sur http://localhost:${PORT}`); });
+app.listen(PORT, () => { console.log(`Serveur démarré sur le port ${PORT}`); });
