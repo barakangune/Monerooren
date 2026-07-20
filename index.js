@@ -23,12 +23,16 @@ app.post("/initier-paiement", async (req, res) => {
     
     console.log(`Paiement initié pour le plan : ${plan} par ${cardholderName}`);
 
-    // Appel à l'API Moneroo (Correction de l'URL pour l'environnement sandbox)
-    const response = await axios.post("https://api-sandbox.moneroo.io/v1/payments", {
+    // Appel à l'API Moneroo avec le endpoint correct /v1/payments/initialize
+    const response = await axios.post("https://api-sandbox.moneroo.io/v1/payments/initialize", {
         amount: amount,
         currency: "XOF",
-        customer: { name: cardholderName },
-        description: `Abonnement ${plan}`
+        description: `Abonnement ${plan}`,
+        customer: { 
+            name: cardholderName,
+            email: "client@exemple.com" // Champ requis par l'API
+        },
+        return_url: "https://monerooren.onrender.com" // URL de retour nécessaire
     }, {
         headers: { 
             "Authorization": `Bearer ${MONEROO_API_KEY}`,
