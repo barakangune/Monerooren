@@ -16,22 +16,23 @@ app.use(express.json({
 
 /** 
  * ROUTE ANDROID : Initier le paiement
- * Correspond aux champs définis dans votre PaymentRequest Kotlin
  */
 app.post("/initier-paiement", async (req, res) => {
   try {
-    // Capture de tous les champs envoyés par Android
     const { plan, amount, cardNumber, expiry, cvv, cardholderName } = req.body;
     
     console.log(`Paiement initié pour le plan : ${plan} par ${cardholderName}`);
 
+    // Sécurité: Si le montant envoyé par Android est 0, on met un prix par défaut (ex: 1000 XOF) 
+    // car l'API Moneroo refusera un paiement de 0.
+    const prixFinal = amount > 0 ? amount : 1000;
+
     // Appel à l'API Moneroo
     const response = await axios.post("https://api.moneroo.io/v1/payments", {
-        amount: amount,
+        amount: prixFinal,
         currency: "XOF",
-        customer: { name: cardholderName },
+        customer: { name: cardholderName || "Client" },
         description: `Abonnement ${plan}`
-        // Note : Si l'API Moneroo nécessite les détails de la carte ici, ajoutez-les selon leur documentation
     }, {
         headers: { 
             "Authorization": `Bearer ${MONEROO_API_KEY}`,
@@ -45,10 +46,11 @@ app.post("/initier-paiement", async (req, res) => {
         transaction: response.data 
     });
   } catch (error) {
-    console.error("Erreur API Moneroo :", error.response?.data || error.message);
+    console.error("Erreur API Moneroo :", error.response ? error.response.data : error.message);
     return res.status(500).json({ 
         status: "error", 
-        message: "Erreur lors de la connexion à Moneroo" 
+        message: "Erreur lors de la connexion à Moneroo",
+        details: error.response ? error.response.data : error.message
     });
   }
 });
@@ -70,10 +72,6 @@ app.post("/webhook/moneroo", (req, res) => {
 
     const payload = req.body;
     console.log("Webhook reçu :", payload.data?.status);
-
-    if (payload.data?.status === "success") {
-      console.log("Paiement confirmé : activation de l'abonnement.");
-    }
 
     return res.status(200).json({ success: true, message: "Webhook traité avec succès." });
   } catch (error) {
