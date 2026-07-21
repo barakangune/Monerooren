@@ -29,9 +29,14 @@ const CHARIOW_PRODUCT_IDS = {
 // Pour un paiement par carte XOF
 const DEFAULT_PAYMENT_METHODS = ['card_xof'];
 
-// Mémoire temporaire de test
+// =====================
+// Structures de données temporaires
+// =====================
 const subscriptions = new Map();
 const pendingPurchases = new Map();
+const freeTrials = new Map(); 
+const usedPhoneNumbers = new Set(); 
+const usedDevices = new Set(); // Nouvelle structure pour protéger par identifiant d'appareil Android
 
 // Middleware pour récupérer le raw body nécessaire à la vérification du webhook
 app.use(
@@ -43,7 +48,7 @@ app.use(
 );
 
 // =====================
-// Helpers
+// Helpers Moneroo & Chariow
 // =====================
 function safeJsonParse(value, fallback = null) {
   try {
@@ -139,9 +144,14 @@ function sanitizePhone(phone) {
   const raw = String(phone).trim();
   if (!raw) return null;
 
-  // Garde uniquement les chiffres
   const digits = raw.replace(/[^\d]/g, '');
   return digits || null;
+}
+
+function sanitizeDeviceId(deviceId) {
+  if (deviceId === undefined || deviceId === null) return null;
+  const raw = String(deviceId).trim();
+  return raw || null;
 }
 
 function extractCheckoutUrl(payload) {
@@ -254,6 +264,145 @@ function planFromProductId(productId) {
 
   return null;
 }
+
+// =====================
+// Helpers Essai Gratuit (Free Trial) mis à jour avec deviceId
+// =====================
+
+/**
+ * Vérifie si le numéro, l'utilisateur ou l'appareil a déjà bénéficié d'un essai gratuit.
+ */
+function hasAlreadyUsedFreeTrial(phone, userId, email, deviceId) {
+  const cleanPhone = sanitizePhone(phone);
+  const cleanDevice = sanitizeDeviceId(deviceId);
+
+  if (cleanPhone && usedPhoneNumbers.has(cleanPhone)) {
+    return true;
+  }
+
+  if (cleanDevice && usedDevices.has(cleanDevice)) {
+    return true;
+  }
+
+  const keys = [cleanPhone, userId, email, cleanDevice].filter(Boolean);
+  for (const k of keys) {
+    if (freeTrials.has(String(k).trim())) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Vérifie si l'essai gratuit est expiré (durée : 24 heures).
+ */
+function isFreeTrialExpired(trialData) {
+  if (!trialData || !trialData.expiresAt) return true;
+  return new Date() > new Date(trialData.expiresAt);
+}
+
+/**
+ * Récupère le statut de l'essai gratuit pour un identifiant donné.
+ */
+function getFreeTrialStatus(key) {
+  const trial = freeTrials.get(String(key || '').trim());
+  if (!trial) {
+    return {
+      active: false,
+      plan: null,
+      expiresAt: null,
+      remainingHours: 0,
+    };
+  }
+
+  const expired = isFreeTrialExpired(trial);
+  if (expired) {
+    if (trial.active) {
+      trial.active = false;
+      console.log("FREE TRIAL EXPIRÉ");
+    }
+    return {
+      active: false,
+      plan: 'FREE',
+      expiresAt: trial.expiresAt,
+      remainingHours: 0,
+    };
+  }
+
+  const now = new Date();
+  const expiration = new Date(trial.expiresAt);
+  const diffMs = expiration - now;
+  const remainingHours = Math.max(0, parseFloat((diffMs / (1000 * 60 * 60)).toFixed(2)));
+
+  return {
+    active: true,
+    plan: 'FREE',
+    expiresAt: trial.expiresAt,
+    remainingHours,
+  };
+}
+
+/**
+ * Active l'essai gratuit (durée 24h) en enregistrant le deviceId.
+ */
+function activateFreeTrial({ userId, email, phone, deviceId }) {
+  const cleanPhone = sanitizePhone(phone);
+  const cleanDevice = sanitizeDeviceId(deviceId);
+  const activatedAt = new Date();
+  const expiresAt = new Date(activatedAt.getTime() + 24 * 60 * 60 * 1000); // +24 heures
+
+  const trialObject = {
+    active: true,
+    plan: 'FREE',
+    userId: userId || null,
+    email: email || null,
+    phone: cleanPhone,
+    deviceId: cleanDevice,
+    activatedAt: activatedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+
+  if (cleanPhone) {
+    usedPhoneNumbers.add(cleanPhone);
+    freeTrials.set(cleanPhone, trialObject);
+  }
+  if (cleanDevice) {
+    usedDevices.add(cleanDevice);
+    freeTrials.set(cleanDevice, trialObject);
+  }
+  if (userId) {
+    freeTrials.set(String(userId).trim(), trialObject);
+  }
+  if (email) {
+    freeTrials.set(String(email).trim().toLowerCase(), trialObject);
+  }
+
+  console.log("FREE TRIAL ACTIVÉ");
+  return trialObject;
+}
+
+// =====================
+// Middleware de vérification d'essai expiré
+// =====================
+const checkFreeTrialExpirationMiddleware = (req, res, next) => {
+  try {
+    const { userId, email, phone, deviceId } = req.body || req.query || {};
+    const keys = [sanitizePhone(phone), userId, email, sanitizeDeviceId(deviceId)].filter(Boolean);
+
+    for (const k of keys) {
+      const trial = freeTrials.get(String(k).trim());
+      if (trial && trial.active && isFreeTrialExpired(trial)) {
+        trial.active = false;
+        console.log("FREE TRIAL EXPIRÉ");
+      }
+    }
+    next();
+  } catch (error) {
+    console.error("Erreur middleware vérification essai:", error);
+    next();
+  }
+};
 
 // =====================
 // Route santé
@@ -464,7 +613,7 @@ app.get('/paiement/retour', (req, res) => {
 });
 
 // =====================
-// Chariow
+// Chariow & Abonnements
 // =====================
 app.post('/acheter-abonnement', async (req, res) => {
   try {
@@ -505,7 +654,6 @@ app.post('/acheter-abonnement', async (req, res) => {
     const normalizedPlan = normalizePlan(plan) || planFromProductId(resolvedProductId);
     const sanitizedPhone = sanitizePhone(phone);
 
-    // On garde une trace locale pour le test/diagnostic
     const lookupKey = String(userId || email || resolvedProductId).trim();
     pendingPurchases.set(lookupKey, {
       userId: userId || null,
@@ -545,10 +693,6 @@ app.post('/acheter-abonnement', async (req, res) => {
 
     const data = response.data || {};
     const checkoutUrl = extractCheckoutUrl(data);
-
-    console.log('REPONSE CHARIOW BRUTE :');
-    console.log(JSON.stringify(data, null, 2));
-    console.log('URL EXTRAITE :', checkoutUrl);
 
     if (!checkoutUrl) {
       return res.status(502).json({
@@ -610,12 +754,6 @@ app.post('/webhook/chariow', (req, res) => {
           productId,
           source: 'chariow',
         });
-
-        console.log('Abonnement activé :', {
-          email,
-          plan,
-          productId,
-        });
         break;
 
       case 'failed.sale':
@@ -671,6 +809,82 @@ app.get('/subscription-status', (req, res) => {
     status: 'success',
     subscription: getSubscriptionStatus(key),
   });
+});
+
+// =====================
+// Endpoints : Essai Gratuit (Free Trial) avec deviceId
+// =====================
+
+/**
+ * POST /activer-essai
+ * Active l'essai gratuit de 24h pour un utilisateur unique, un téléphone et un appareil.
+ */
+app.post('/activer-essai', checkFreeTrialExpirationMiddleware, (req, res) => {
+  try {
+    const { userId, email, phone, deviceId } = req.body || {};
+
+    if (!userId || !email || !phone || !deviceId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Les champs userId, email, phone et deviceId sont obligatoires pour activer l’essai gratuit.',
+      });
+    }
+
+    // Vérifier si le téléphone, le compte ou l'appareil a déjà bénéficié d'un essai
+    if (hasAlreadyUsedFreeTrial(phone, userId, email, deviceId)) {
+      console.log("ESSAI GRATUIT DÉJÀ UTILISÉ");
+      return res.status(403).json({
+        status: 'error',
+        message: 'Cet utilisateur, ce numéro de téléphone ou cet appareil a déjà bénéficié d’un essai gratuit.',
+      });
+    }
+
+    // Activer l'essai gratuit
+    const trial = activateFreeTrial({ userId, email, phone, deviceId });
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Essai gratuit activé avec succès pour 24 heures.',
+      trial,
+    });
+  } catch (error) {
+    console.error('ERREUR /activer-essai:', error);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Erreur serveur lors de l’activation de l’essai gratuit.',
+    });
+  }
+});
+
+/**
+ * GET /free-trial-status
+ * Retourne le statut détaillé de l'essai gratuit.
+ */
+app.get('/free-trial-status', checkFreeTrialExpirationMiddleware, (req, res) => {
+  try {
+    const { userId, email, phone, deviceId } = req.query || {};
+    const lookupKey = sanitizeDeviceId(deviceId) || sanitizePhone(phone) || userId || email;
+
+    if (!lookupKey) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Un paramètre (deviceId, phone, userId ou email) est requis pour vérifier le statut de l’essai.',
+      });
+    }
+
+    const status = getFreeTrialStatus(lookupKey);
+
+    return res.status(200).json({
+      status: 'success',
+      ...status,
+    });
+  } catch (error) {
+    console.error('ERREUR /free-trial-status:', error);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Erreur lors de la récupération du statut de l’essai gratuit.',
+    });
+  }
 });
 
 // =====================
