@@ -16,12 +16,22 @@ const MONEROO_API_BASE_URL = process.env.MONEROO_API_BASE_URL || 'https://api.mo
 const MONEROO_RETURN_URL =
   process.env.MONEROO_RETURN_URL || 'https://monerooren.onrender.com/paiement/retour';
 
-// Configuration Chariow
 const CHARIOW_API_KEY = process.env.CHARIOW_API_KEY;
 const CHARIOW_API_BASE_URL = process.env.CHARIOW_API_BASE_URL || 'https://api.chariow.com';
 
-// Pour un paiement par carte XOF, la doc Moneroo liste notamment le shortcode `card_xof`.
+// IDs des produits Chariow
+const CHARIOW_PRODUCT_IDS = {
+  standard: process.env.CHARIOW_STANDARD_PRODUCT_ID || 'prd_ygxc18l4',
+  premium: process.env.CHARIOW_PREMIUM_PRODUCT_ID || 'prd_a0sebq9j',
+  advanced: process.env.CHARIOW_ADVANCED_PRODUCT_ID || 'prd_4ighppgk',
+};
+
+// Pour un paiement par carte XOF
 const DEFAULT_PAYMENT_METHODS = ['card_xof'];
+
+// Mémoire temporaire de test
+const subscriptions = new Map();
+const pendingPurchases = new Map();
 
 // Middleware pour récupérer le raw body nécessaire à la vérification du webhook
 app.use(
@@ -81,6 +91,170 @@ function isChariowConfigured() {
   return Boolean(CHARIOW_API_KEY);
 }
 
+function normalizePlan(plan) {
+  const value = String(plan || '').trim().toLowerCase();
+
+  if (
+    value === 'standard' ||
+    value === 'standard ai' ||
+    value === 'offre standard'
+  ) {
+    return 'standard';
+  }
+
+  if (
+    value === 'premium' ||
+    value === 'premium ai' ||
+    value === 'offre premium'
+  ) {
+    return 'premium';
+  }
+
+  if (
+    value === 'advanced' ||
+    value === 'advance' ||
+    value === 'advanced ai' ||
+    value === 'offre avancé' ||
+    value === 'offre avance' ||
+    value === 'offre advanced'
+  ) {
+    return 'advanced';
+  }
+
+  return value || null;
+}
+
+function resolveChariowProductId({ plan, product_id }) {
+  if (product_id) return String(product_id).trim();
+
+  const normalizedPlan = normalizePlan(plan);
+  if (!normalizedPlan) return null;
+
+  return CHARIOW_PRODUCT_IDS[normalizedPlan] || null;
+}
+
+function sanitizePhone(phone) {
+  if (phone === undefined || phone === null) return null;
+
+  const raw = String(phone).trim();
+  if (!raw) return null;
+
+  // Garde uniquement les chiffres
+  const digits = raw.replace(/[^\d]/g, '');
+  return digits || null;
+}
+
+function extractCheckoutUrl(payload) {
+  const visited = new Set();
+  const stack = [payload];
+
+  while (stack.length) {
+    const current = stack.pop();
+
+    if (!current || typeof current !== 'object') continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    if (typeof current.checkout_url === 'string' && current.checkout_url.trim()) {
+      return current.checkout_url.trim();
+    }
+
+    if (typeof current.checkoutUrl === 'string' && current.checkoutUrl.trim()) {
+      return current.checkoutUrl.trim();
+    }
+
+    if (typeof current.payment_url === 'string' && current.payment_url.trim()) {
+      return current.payment_url.trim();
+    }
+
+    if (typeof current.paymentUrl === 'string' && current.paymentUrl.trim()) {
+      return current.paymentUrl.trim();
+    }
+
+    if (typeof current.url === 'string' && current.url.trim()) {
+      return current.url.trim();
+    }
+
+    if (current.data && typeof current.data === 'object') stack.push(current.data);
+    if (current.payment && typeof current.payment === 'object') stack.push(current.payment);
+    if (current.checkout && typeof current.checkout === 'object') stack.push(current.checkout);
+    if (Array.isArray(current.items)) stack.push(...current.items);
+    if (Array.isArray(current.results)) stack.push(...current.results);
+  }
+
+  return null;
+}
+
+function extractChariowEvent(payload) {
+  return (
+    payload?.event ||
+    payload?.type ||
+    payload?.data?.event ||
+    payload?.data?.type ||
+    null
+  );
+}
+
+function extractChariowEmail(payload) {
+  return (
+    payload?.email ||
+    payload?.data?.email ||
+    payload?.data?.customer?.email ||
+    payload?.customer?.email ||
+    null
+  );
+}
+
+function extractChariowProductId(payload) {
+  return (
+    payload?.product_id ||
+    payload?.data?.product_id ||
+    payload?.data?.product?.id ||
+    payload?.data?.product?.product_id ||
+    payload?.product?.id ||
+    null
+  );
+}
+
+function activateSubscription({ email, userId, plan, productId, source }) {
+  const key = String(userId || email || productId || '').trim();
+  if (!key) return;
+
+  subscriptions.set(key, {
+    active: true,
+    email: email || null,
+    userId: userId || null,
+    plan: plan || null,
+    productId: productId || null,
+    source: source || null,
+    activatedAt: new Date().toISOString(),
+  });
+}
+
+function getSubscriptionStatus(key) {
+  const item = subscriptions.get(String(key || '').trim());
+  if (!item) {
+    return {
+      active: false,
+      plan: null,
+      productId: null,
+      activatedAt: null,
+    };
+  }
+
+  return item;
+}
+
+function planFromProductId(productId) {
+  const id = String(productId || '').trim();
+
+  if (id === CHARIOW_PRODUCT_IDS.standard) return 'standard';
+  if (id === CHARIOW_PRODUCT_IDS.premium) return 'premium';
+  if (id === CHARIOW_PRODUCT_IDS.advanced) return 'advanced';
+
+  return null;
+}
+
 // =====================
 // Route santé
 // =====================
@@ -88,8 +262,16 @@ app.get('/', (req, res) => {
   res.send('Mon serveur Moneroo et Chariow fonctionne correctement.');
 });
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    monerooConfigured: isMonerooConfigured(),
+    chariowConfigured: isChariowConfigured(),
+  });
+});
+
 // =====================
-// Routes Moneroo
+// Moneroo
 // =====================
 app.post('/initier-paiement', async (req, res) => {
   try {
@@ -174,8 +356,8 @@ app.post('/initier-paiement', async (req, res) => {
     );
 
     const data = response.data || {};
-    const checkoutUrl = data?.data?.checkout_url || null;
-    const paymentId = data?.data?.id || null;
+    const checkoutUrl = extractCheckoutUrl(data);
+    const paymentId = data?.data?.id || data?.id || null;
 
     return res.status(200).json({
       status: 'success',
@@ -257,10 +439,33 @@ app.get('/paiement/:paymentId/verifier', async (req, res) => {
   }
 });
 
+app.get('/paiement/retour', (req, res) => {
+  const { status, paymentId, paymentStatus } = req.query || {};
+
+  res.status(200).send(`
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Retour paiement</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; }
+          .ok { color: #0a7a2f; }
+          .bad { color: #b00020; }
+        </style>
+      </head>
+      <body>
+        <h2>Retour de paiement</h2>
+        <p>Status: <strong class="${status === 'success' ? 'ok' : 'bad'}">${status || 'unknown'}</strong></p>
+        <p>Payment ID: ${paymentId || '-'}</p>
+        <p>Payment Status: ${paymentStatus || '-'}</p>
+      </body>
+    </html>
+  `);
+});
+
 // =====================
-// Routes Chariow
+// Chariow
 // =====================
-// Endpoint pour initier un achat d'abonnement via Chariow
 app.post('/acheter-abonnement', async (req, res) => {
   try {
     if (!isChariowConfigured()) {
@@ -270,7 +475,16 @@ app.post('/acheter-abonnement', async (req, res) => {
       });
     }
 
-    const { product_id, email, firstName, lastName, phone } = req.body;
+    const {
+      userId,
+      plan,
+      product_id,
+      email,
+      firstName,
+      lastName,
+      phone,
+      countryCode,
+    } = req.body || {};
 
     if (!email) {
       return res.status(400).json({
@@ -279,13 +493,42 @@ app.post('/acheter-abonnement', async (req, res) => {
       });
     }
 
+    const resolvedProductId = resolveChariowProductId({ plan, product_id });
+
+    if (!resolvedProductId) {
+      return res.status(400).json({
+        status: 'error',
+        message: "Impossible de déterminer le product_id Chariow.",
+      });
+    }
+
+    const normalizedPlan = normalizePlan(plan) || planFromProductId(resolvedProductId);
+    const sanitizedPhone = sanitizePhone(phone);
+
+    // On garde une trace locale pour le test/diagnostic
+    const lookupKey = String(userId || email || resolvedProductId).trim();
+    pendingPurchases.set(lookupKey, {
+      userId: userId || null,
+      email: String(email),
+      plan: normalizedPlan,
+      productId: resolvedProductId,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+
     const payload = {
-      product_id,
-      email,
-      first_name: firstName,
-      last_name: lastName,
-      phone: { number: phone, country_code: "CD" }
+      product_id: resolvedProductId,
+      email: String(email),
+      first_name: String(firstName || 'Client'),
+      last_name: String(lastName || 'Inconnu'),
     };
+
+    if (sanitizedPhone) {
+      payload.phone = {
+        number: sanitizedPhone,
+        country_code: String(countryCode || 'CD').toUpperCase(),
+      };
+    }
 
     const response = await axios.post(
       `${CHARIOW_API_BASE_URL}/v1/checkout`,
@@ -300,10 +543,29 @@ app.post('/acheter-abonnement', async (req, res) => {
       }
     );
 
+    const data = response.data || {};
+    const checkoutUrl = extractCheckoutUrl(data);
+
+    console.log('REPONSE CHARIOW BRUTE :');
+    console.log(JSON.stringify(data, null, 2));
+    console.log('URL EXTRAITE :', checkoutUrl);
+
+    if (!checkoutUrl) {
+      return res.status(502).json({
+        status: 'error',
+        message: 'URL de paiement introuvable dans la réponse Chariow.',
+        raw: data,
+      });
+    }
+
     return res.status(200).json({
       status: 'success',
-      message: 'Achat d’abonnement Chariow initié avec succès.',
-      raw: response.data,
+      message: 'Achat d’abonnement initié avec succès.',
+      checkout_url: checkoutUrl,
+      checkoutUrl,
+      product_id: resolvedProductId,
+      plan: normalizedPlan,
+      raw: data,
     });
   } catch (error) {
     const errorDetails = error.response?.data || {
@@ -324,95 +586,47 @@ app.post('/acheter-abonnement', async (req, res) => {
   }
 });
 
-// =====================
-// Webhooks Moneroo
-// =====================
-app.post('/webhook/moneroo', async (req, res) => {
-  try {
-    const signature =
-      req.headers['x-moneroo-signature'] ||
-      req.headers['X-Moneroo-Signature'] ||
-      '';
-
-    if (!MONEROO_WEBHOOK_SECRET) {
-      return res.status(500).json({
-        success: false,
-        message: 'MONEROO_WEBHOOK_SECRET manquante.',
-      });
-    }
-
-    const isValid = verifyWebhookSignature(
-      req.rawBody || '',
-      String(signature),
-      MONEROO_WEBHOOK_SECRET
-    );
-
-    if (!isValid) {
-      return res.status(403).json({
-        success: false,
-        message: 'Signature webhook invalide.',
-      });
-    }
-
-    const payload = safeJsonParse(req.rawBody, null);
-
-    if (!payload) {
-      return res.status(400).json({
-        success: false,
-        message: 'Payload webhook JSON invalide.',
-      });
-    }
-
-    const event = payload.event;
-    const data = payload.data || {};
-
-    console.log('Webhook Moneroo reçu :', {
-      event,
-      paymentId: data.id || null,
-      status: data.status || null,
-    });
-
-    if (event === 'payment.success') {
-      console.log('Paiement réussi:', data.id);
-    } else if (event === 'payment.failed') {
-      console.log('Paiement échoué:', data.id);
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: 'Webhook traité avec succès.',
-    });
-  } catch (error) {
-    console.error('ERREUR WEBHOOK MONEROO:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Erreur serveur webhook.',
-    });
-  }
-});
-
-// =====================
-// Pulses Chariow
-// =====================
 app.post('/webhook/chariow', (req, res) => {
   try {
     console.log('===== PULSE CHARIOW =====');
     console.log(req.body);
 
-    const event = req.body?.event;
-    const data = req.body?.data || req.body;
+    const payload = req.body || {};
+    const event = extractChariowEvent(payload);
+    const email = extractChariowEmail(payload);
+    const productId = extractChariowProductId(payload);
+    const plan = planFromProductId(productId);
 
     switch (event) {
       case 'successful.sale':
+      case 'sale.success':
+      case 'payment.success':
         console.log('Paiement réussi !');
-        console.log('Activer abonnement Premium.');
+
+        activateSubscription({
+          email,
+          userId: payload.userId || payload?.data?.userId || null,
+          plan,
+          productId,
+          source: 'chariow',
+        });
+
+        console.log('Abonnement activé :', {
+          email,
+          plan,
+          productId,
+        });
         break;
 
       case 'failed.sale':
+      case 'sale.failed':
+      case 'payment.failed':
         console.log('Paiement échoué.');
         break;
 
       case 'refunded.sale':
+      case 'sale.refunded':
+      case 'payment.refunded':
         console.log('Paiement remboursé.');
         break;
 
@@ -434,6 +648,31 @@ app.post('/webhook/chariow', (req, res) => {
   }
 });
 
+app.get('/subscription-status/:key', (req, res) => {
+  const { key } = req.params;
+  return res.status(200).json({
+    status: 'success',
+    subscription: getSubscriptionStatus(key),
+  });
+});
+
+app.get('/subscription-status', (req, res) => {
+  const { userId, email, product_id } = req.query || {};
+  const key = userId || email || product_id;
+
+  if (!key) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'userId, email ou product_id est requis.',
+    });
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    subscription: getSubscriptionStatus(key),
+  });
+});
+
 // =====================
 // Lancement du serveur
 // =====================
@@ -441,4 +680,5 @@ app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
   console.log(`Base API Moneroo : ${MONEROO_API_BASE_URL}`);
   console.log(`Base API Chariow : ${CHARIOW_API_BASE_URL}`);
+  console.log('Produits Chariow :', CHARIOW_PRODUCT_IDS);
 });
